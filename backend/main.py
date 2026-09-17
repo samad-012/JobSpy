@@ -167,11 +167,12 @@ async def search_jobs(request: JobSearchRequest) -> JobSearchResponse:
     try:
         jobs, failed_sites = await asyncio.to_thread(run_search, request)
     except Exception as exc:
-        detail = (
-            "Google Jobs is rate limiting this server. Try another source later."
-            if request.sites == ["google"] and "429" in str(exc)
-            else "Job search failed. Please try again later."
-        )
+        if request.sites == ["google"] and "429" in str(exc):
+            detail = "Google Jobs is rate limiting this server. Try another source later."
+        elif request.sites == ["naukri"] and "CAPTCHA" in str(exc):
+            detail = "Naukri requires CAPTCHA verification and cannot be searched from this server right now."
+        else:
+            detail = "Job search failed. Please try again later."
         raise HTTPException(status_code=502, detail=detail) from exc
 
     return JobSearchResponse(

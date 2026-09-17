@@ -108,6 +108,8 @@ class Naukri(Scraper):
             try:
                 log.debug(f"Sending request to {self.base_url} with params: {params}")
                 response = self.session.get(self.base_url, params=params, timeout=10)
+                if response.status_code == 406 and "recaptcha" in response.text.lower():
+                    raise NaukriException("Naukri requires CAPTCHA verification")
                 if response.status_code not in range(200, 400):
                     err = f"Naukri API response status code {response.status_code} - {response.text}"
                     log.error(err)
@@ -118,6 +120,8 @@ class Naukri(Scraper):
                 if not job_details:
                     log.warning("No job details found in API response")
                     break
+            except NaukriException:
+                raise
             except Exception as e:
                 log.error(f"Naukri API request failed: {str(e)}")
                 return JobResponse(jobs=job_list)

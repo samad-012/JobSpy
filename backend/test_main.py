@@ -1,7 +1,11 @@
 from fastapi.testclient import TestClient
 import pandas as pd
+import pytest
 
 import backend.main as main
+import jobspy.naukri as naukri
+from jobspy.exception import NaukriException
+from jobspy.model import ScraperInput, Site
 
 
 client = TestClient(main.app)
@@ -98,3 +102,18 @@ def test_all_sources_include_naukri_and_keep_google_filters(monkeypatch) -> None
     assert {kwargs["site_name"] for kwargs in captured} == set(sites)
     assert all(kwargs["hours_old"] == 24 and kwargs["is_remote"] is True for kwargs in captured)
     assert all("google_search_term" not in kwargs for kwargs in captured)
+
+
+def test_naukri_captcha_is_not_reported_as_empty_results(monkeypatch) -> None:
+    class BlockedSession:
+        headers = {}
+
+        def get(self, *args, **kwargs):
+            return type("Response", (), {"status_code": 406, "text": '{"message":"recaptcha required"}'})()
+
+    monkeypatch.setattr(naukri, "create_session", lambda **kwargs: BlockedSession())
+
+    with pytest.raises(NaukriException, match="CAPTCHA"):
+        naukri.Naukri().scrape(
+            ScraperInput(site_type=[Site.NAUKRI], search_term="engineer", results_wanted=1)
+        )
