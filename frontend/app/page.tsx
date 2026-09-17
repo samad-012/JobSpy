@@ -21,15 +21,26 @@ type SearchResponse = {
   jobs: Job[];
   resultCount: number;
   searchedSites: string[];
+  failedSites?: string[];
   durationMs: number;
 };
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const SEARCH_SITES = ["linkedin", "indeed", "google", "zip_recruiter", "glassdoor", "naukri"];
+const SITE_LABELS: Record<string, string> = {
+  linkedin: "LinkedIn",
+  indeed: "Indeed",
+  google: "Google Jobs",
+  zip_recruiter: "ZipRecruiter",
+  glassdoor: "Glassdoor",
+  naukri: "Naukri",
+};
 
 export default function Home() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [warning, setWarning] = useState("");
   const [summary, setSummary] = useState("");
   const [timeUnit, setTimeUnit] = useState<"hours" | "days">("days");
   const [postedWithin, setPostedWithin] = useState(3);
@@ -38,11 +49,12 @@ export default function Home() {
     event.preventDefault();
     setLoading(true);
     setError("");
+    setWarning("");
     setSummary("");
 
     const data = new FormData(event.currentTarget);
     const request = {
-      sites: [data.get("site")],
+      sites: data.get("site") === "all" ? SEARCH_SITES : [data.get("site")],
       searchTerm: data.get("searchTerm"),
       location: data.get("location"),
       resultsWanted: Number(data.get("resultsWanted")),
@@ -64,6 +76,9 @@ export default function Home() {
       const payload = result as SearchResponse;
       setJobs(payload.jobs);
       setSummary(`${payload.resultCount} jobs found in ${(payload.durationMs / 1000).toFixed(1)} seconds`);
+      if (payload.failedSites?.length) {
+        setWarning(`Some sources could not be searched: ${payload.failedSites.map((site) => SITE_LABELS[site] ?? site).join(", ")}.`);
+      }
     } catch (reason) {
       setJobs([]);
       setError(reason instanceof Error ? reason.message : "The search could not be completed.");
@@ -100,11 +115,13 @@ export default function Home() {
           <label>
             <span>Source</span>
             <select name="site" defaultValue="linkedin">
+              <option value="all">All sources</option>
               <option value="linkedin">LinkedIn</option>
               <option value="indeed">Indeed</option>
               <option value="google">Google Jobs</option>
               <option value="zip_recruiter">ZipRecruiter</option>
               <option value="glassdoor">Glassdoor</option>
+              <option value="naukri">Naukri</option>
             </select>
           </label>
           <label>
@@ -140,7 +157,7 @@ export default function Home() {
             </div>
           </label>
           <label>
-            <span>Results</span>
+            <span>Results per source</span>
             <select name="resultsWanted" defaultValue="5">
               <option value="5">5</option>
               <option value="10">10</option>
@@ -165,6 +182,7 @@ export default function Home() {
           </div>
 
           {error && <div className="message error">{error}</div>}
+          {warning && <div className="message">{warning}</div>}
           {!error && !loading && !summary && <div className="message">Run a search to see matching jobs.</div>}
           {!error && !loading && summary && jobs.length === 0 && <div className="message">No jobs matched this search.</div>}
 
