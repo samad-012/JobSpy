@@ -1,0 +1,1 @@
+"""JobSpy web API package."""
