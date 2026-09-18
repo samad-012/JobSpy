@@ -4,11 +4,12 @@ import asyncio
 import logging
 import math
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from enum import Enum
 from time import perf_counter
-from typing import Any
+from typing import Any, Literal
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException
@@ -28,10 +29,16 @@ class JobSearchRequest(BaseModel):
     results_wanted: int = Field(default=5, alias="resultsWanted", ge=1, le=25)
     hours_old: int | None = Field(default=72, alias="hoursOld", ge=1, le=720)
     remote_only: bool = Field(default=False, alias="remoteOnly")
+    work_mode: Literal["all", "remote", "onsite"] | None = Field(default=None, alias="workMode")
     fetch_descriptions: bool = Field(default=False, alias="fetchDescriptions")
     country_indeed: str = Field(default="India", alias="countryIndeed")
 
     model_config = {"populate_by_name": True}
+
+    @property
+    def selected_work_mode(self) -> str:
+        # Keep older clients using remoteOnly working; an explicit mode wins.
+        return self.work_mode or ("remote" if self.remote_only else "all")
 
     @field_validator("sites")
     @classmethod
@@ -100,6 +107,30 @@ def json_value(value: Any) -> Any:
     return value
 
 
+def classify_work_mode(row: dict[str, Any]) -> str:
+    """Conservatively filter source flags using visible work-arrangement evidence.
+
+    False remote flags (and Naukri's inferred office default) do not prove onsite.
+    Conflicting or hybrid evidence is excluded from both strict filters.
+    """
+    heading = " ".join(str(json_value(row.get(key)) or "") for key in ("title", "location"))
+    description = str(json_value(row.get("description")) or "")
+    text = re.sub(r"<[^>]+>", " ", f"{heading} {description}").lower()
+    text = re.sub(r"\s+", " ", text)
+    if re.search(r"\bhybrid\b", text):
+        return "hybrid"
+    onsite = bool(re.search(r"\b(?:on[- ]?site|in[- ]office)\b", heading, re.I)) or bool(
+        re.search(r"\b(?:work(?:ing)? from (?:the )?office|(?:work (?:mode|arrangement)|location type)\s*[:\-]\s*on[- ]?site|(?:role|position|job) (?:is|requires) (?:fully |strictly )?on[- ]?site)\b", text)
+    )
+    no_remote = bool(re.search(r"\b(?:not (?:a )?remote|no remote|remote (?:work )?(?:is )?not (?:available|allowed|offered|permitted))\b", text))
+    remote = json_value(row.get("is_remote")) is True
+    if onsite:
+        return "onsite" if not remote or no_remote else "unknown"
+    if no_remote:
+        return "unknown"
+    return "remote" if remote else "unknown"
+
+
 def run_search(request: JobSearchRequest) -> tuple[list[JobResult], list[str]]:
     def scrape_site(site: str) -> pd.DataFrame:
         return scrape_jobs(
@@ -108,8 +139,8 @@ def run_search(request: JobSearchRequest) -> tuple[list[JobResult], list[str]]:
             location=request.location,
             results_wanted=request.results_wanted,
             hours_old=request.hours_old,
-            is_remote=request.remote_only,
-            linkedin_fetch_description=request.fetch_descriptions,
+            is_remote=request.selected_work_mode == "remote",
+            linkedin_fetch_description=request.fetch_descriptions or request.selected_work_mode != "all",
             country_indeed=request.country_indeed,
             verbose=1,
         )
@@ -138,6 +169,8 @@ def run_search(request: JobSearchRequest) -> tuple[list[JobResult], list[str]]:
         if site not in frames:
             continue
         for row in frames[site].to_dict(orient="records"):
+            if request.selected_work_mode != "all" and classify_work_mode(row) != request.selected_work_mode:
+                continue
             results.append(
                 JobResult(
                     id=json_value(row.get("id")),
@@ -148,8 +181,8 @@ def run_search(request: JobSearchRequest) -> tuple[list[JobResult], list[str]]:
                     datePosted=json_value(row.get("date_posted")),
                     jobUrl=str(json_value(row.get("job_url")) or ""),
                     directUrl=json_value(row.get("job_url_direct")),
-                    description=json_value(row.get("description")),
-                    isRemote=json_value(row.get("is_remote")),
+                    description=json_value(row.get("description")) if request.fetch_descriptions or request.selected_work_mode == "all" else None,
+                    isRemote=(request.selected_work_mode == "remote") if request.selected_work_mode != "all" else json_value(row.get("is_remote")),
                     jobType=json_value(row.get("job_type")),
                 )
             )

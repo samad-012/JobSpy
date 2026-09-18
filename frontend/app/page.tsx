@@ -51,6 +51,7 @@ export default function Home() {
     setError("");
     setWarning("");
     setSummary("");
+    setJobs([]);
 
     const data = new FormData(event.currentTarget);
     const request = {
@@ -59,7 +60,7 @@ export default function Home() {
       location: data.get("location"),
       resultsWanted: Number(data.get("resultsWanted")),
       hoursOld: timeUnit === "days" ? postedWithin * 24 : postedWithin,
-      remoteOnly: data.get("remoteOnly") === "on",
+      workMode: data.get("workMode"),
       fetchDescriptions: data.get("fetchDescriptions") === "on",
       countryIndeed: "India",
     };
@@ -165,8 +166,15 @@ export default function Home() {
               <option value="25">25</option>
             </select>
           </label>
+          <label>
+            <span>Work arrangement</span>
+            <select name="workMode" defaultValue="all">
+              <option value="all">All arrangements</option>
+              <option value="remote">Remote only</option>
+              <option value="onsite">Onsite only</option>
+            </select>
+          </label>
           <div className="toggles">
-            <label><input type="checkbox" name="remoteOnly" /> Remote only</label>
             <label><input type="checkbox" name="fetchDescriptions" /> Full descriptions</label>
           </div>
           <button type="submit" disabled={loading}>
@@ -184,7 +192,7 @@ export default function Home() {
           {error && <div className="message error">{error}</div>}
           {warning && <div className="message">{warning}</div>}
           {!error && !loading && !summary && <div className="message">Run a search to see matching jobs.</div>}
-          {!error && !loading && summary && jobs.length === 0 && <div className="message">No jobs matched this search.</div>}
+          {!error && !loading && summary && jobs.length === 0 && <div className="message">No jobs matched this search. Remote and onsite filters exclude hybrid listings and listings without a clear matching work arrangement.</div>}
 
           <div className="job-list">
             {jobs.map((job, index) => (

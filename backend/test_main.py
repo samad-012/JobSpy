@@ -78,7 +78,7 @@ def test_all_sources_include_naukri_and_keep_google_filters(monkeypatch) -> None
         site = kwargs["site_name"]
         if site == "google":
             raise RuntimeError("Google rate limited")
-        return pd.DataFrame([{"site": site, "title": "Engineer", "job_url": f"https://example.com/{site}"}])
+        return pd.DataFrame([{"site": site, "title": "Engineer", "is_remote": True, "job_url": f"https://example.com/{site}"}])
 
     monkeypatch.setattr(main, "scrape_jobs", fake_scrape_jobs)
     sites = ["linkedin", "indeed", "google", "zip_recruiter", "glassdoor", "naukri"]
@@ -117,3 +117,53 @@ def test_naukri_captcha_is_not_reported_as_empty_results(monkeypatch) -> None:
         naukri.Naukri().scrape(
             ScraperInput(site_type=[Site.NAUKRI], search_term="engineer", results_wanted=1)
         )
+
+
+@pytest.mark.parametrize("mode,expected", [("remote", ["remote"]), ("onsite", ["onsite"]), ("all", ["remote", "onsite", "hybrid", "unknown", "missing", "conflict", "negated"])])
+def test_work_arrangement_filters_results(monkeypatch, mode, expected):
+    captured = []
+    def fake_scrape_jobs(**kwargs):
+        captured.append(kwargs)
+        return pd.DataFrame([
+            {"id": "remote", "title": "Engineer", "is_remote": True},
+            {"id": "onsite", "title": "Engineer (On-site)", "is_remote": False},
+            {"id": "hybrid", "title": "Hybrid engineer", "is_remote": True},
+            {"id": "unknown", "title": "Engineer", "is_remote": False, "work_from_home_type": "Work from office"},
+            {"id": "missing", "title": "Engineer", "is_remote": None},
+            {"id": "conflict", "title": "Onsite engineer", "is_remote": True},
+            {"id": "negated", "title": "Engineer", "is_remote": True, "description": "Remote work is not available"},
+        ])
+    monkeypatch.setattr(main, "scrape_jobs", fake_scrape_jobs)
+    response = client.post("/api/jobs/search", json={
+        "searchTerm": "engineer", "location": "India", "workMode": mode,
+    })
+    assert response.status_code == 200
+    payload = response.json()
+    assert [job["id"] for job in payload["jobs"]] == expected
+    assert payload["resultCount"] == len(expected)
+    assert captured[0]["is_remote"] == (mode == "remote")
+    assert captured[0]["linkedin_fetch_description"] == (mode != "all")
+    if mode != "all":
+        assert all(job["description"] is None for job in payload["jobs"])
+        assert all(job["isRemote"] == (mode == "remote") for job in payload["jobs"])
+
+
+def test_explicit_mode_overrides_legacy_remote_flag():
+    request = main.JobSearchRequest(searchTerm="engineer", location="India", remoteOnly=True, workMode="onsite")
+    assert request.selected_work_mode == "onsite"
+
+
+@pytest.mark.parametrize("row,expected", [
+    ({"is_remote": float("nan")}, "unknown"),
+    ({"is_remote": False, "description": "Work from office"}, "onsite"),
+    ({"is_remote": True, "description": "This role is not remote. Work from office."}, "onsite"),
+    ({"is_remote": True, "description": "Hybrid working"}, "hybrid"),
+    ({"is_remote": True, "description": "Collaborate with onsite customers"}, "remote"),
+])
+def test_work_arrangement_evidence(row, expected):
+    assert main.classify_work_mode(row) == expected
+
+
+def test_invalid_work_mode():
+    response = client.post("/api/jobs/search", json={"searchTerm": "engineer", "location": "India", "workMode": "invalid"})
+    assert response.status_code == 422
